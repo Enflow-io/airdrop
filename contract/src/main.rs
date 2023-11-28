@@ -8,37 +8,29 @@ compile_error!("target arch should be wasm32: compile with '--target wasm32-unkn
 // `no_std` environment.
 extern crate alloc;
 
-use alloc::{string::{String, ToString}, vec::Vec};
+use alloc::string::String;
+use alloc::vec;
+use crate::alloc::string::ToString;
 
 use casper_contract::{
-    contract_api::{runtime, storage},
+    contract_api::{runtime, storage, system},
     unwrap_or_revert::UnwrapOrRevert,
 };
-use casper_types::{
-    ApiError, CLType, EntryPoint, EntryPointAccess, EntryPointType, EntryPoints, Key, URef, contracts::NamedKeys,
-};
-
-const KEY_NAME: &str = "my-key-name";
-const RUNTIME_ARG_NAME: &str = "message";
-
-// Creating constants for values within the contract package.
-const CONTRACT_PACKAGE_NAME: &str = "nexfi_airdrop_package";
-const CONTRACT_ACCESS_UREF: &str = "nexfi_airdrop_access_uref";
-
-// Creating constants for the various contract entry points.
-const ENTRY_POINT_COUNTER_INC: &str = "counter_inc";
-const ENTRY_POINT_COUNTER_GET: &str = "counter_get";
-
-// Creating constants for values within the contract.
-const CONTRACT_VERSION_KEY: &str = "version";
-const CONTRACT_KEY: &str = "counter";
-const COUNT_KEY: &str = "count";
+use casper_types::{ApiError, CLType, EntryPointAccess, EntryPointType, EntryPoints, EntryPoint, Parameter, contracts::NamedKeys, URef, U512};
 
 /// An error enum which can be converted to a `u16` so it can be returned as an `ApiError::User`.
 #[repr(u16)]
 enum Error {
-    KeyAlreadyExists = 0,
-    KeyMismatch = 1,
+    CouldntGetContractPurse = 0,
+    CouldntTurnContractPurseKeyIntoURef = 1,
+    CouldntGetPurseBalance = 2,
+    DepositTooLow = 3,
+    CouldntTransferFromPurseToContractPurse = 4,
+    CouldntCreateBalancesDictionary = 5,
+    CouldntGetBalancesDictionary = 6,
+    CouldntUnwrapBalancesDictionaryKeyIntoURef = 7,
+    InsufficientFunds = 8,
+    WithdrawalFailed = 9
 }
 
 impl From<Error> for ApiError {
@@ -48,67 +40,97 @@ impl From<Error> for ApiError {
 }
 
 #[no_mangle]
-pub extern "C" fn call() {
-    // The key shouldn't already exist in the named keys.
-    let missing_key = runtime::get_key(KEY_NAME);
-    if missing_key.is_some() {
-        runtime::revert(Error::KeyAlreadyExists);
+pub extern "C" fn deposit() {
+    let purse = runtime::get_named_arg::<URef>("purse");
+    let caller = runtime::get_caller();
+
+    let contract_purse = runtime::get_key("purse").unwrap_or_revert_with(Error::CouldntGetContractPurse).into_uref().unwrap_or_revert_with(Error::CouldntTurnContractPurseKeyIntoURef);
+    let balance: U512 = system::get_purse_balance(purse).unwrap_or_revert_with(Error::CouldntGetPurseBalance);
+    
+    if balance < U512::from(10u32.pow(9)) {
+        runtime::revert(Error::DepositTooLow);
     }
 
-    // This contract expects a single runtime argument to be provided.  The arg is named "message"
-    // and will be of type `String`.
-    // let value: String = runtime::get_named_arg(RUNTIME_ARG_NAME);
+    system::transfer_from_purse_to_purse(purse, contract_purse, balance, None).unwrap_or_revert_with(Error::CouldntTransferFromPurseToContractPurse);
+    let balances = runtime::get_key("balances").unwrap_or_revert_with(Error::CouldntGetBalancesDictionary).into_uref().unwrap_or_revert_with(Error::CouldntUnwrapBalancesDictionaryKeyIntoURef);
+    
+    match storage::dictionary_get::<U512>(balances, &caller.to_string()) {
+        Ok(Some(old_balance)) => {
+            storage::dictionary_put(balances, &caller.to_string(), old_balance + balance);
+        },
+        Ok(None) => {
+            storage::dictionary_put(balances, &caller.to_string(), balance);
+        },
+        Err(error) => {
+            runtime::revert(ApiError::from(error));
+        }
+    }
+}
 
-    // Store this value under a new unforgeable reference a.k.a `URef`.
-    // let value_ref = storage::new_uref(value);
+#[no_mangle]
+pub extern "C" fn withdraw() {
+    let amount = runtime::get_named_arg::<U512>("amount");
+    let caller = runtime::get_caller();
+    let contract_purse = runtime::get_key("purse").unwrap_or_revert_with(Error::CouldntGetContractPurse).into_uref().unwrap_or_revert_with(Error::CouldntTurnContractPurseKeyIntoURef);
 
-    // Store the new `URef` as a named key with a name of `KEY_NAME`.
-    // let key = Key::URef(value_ref);
-    // runtime::put_key(KEY_NAME, key);
+    let balances = runtime::get_key("balances").unwrap_or_revert_with(Error::CouldntGetBalancesDictionary).into_uref().unwrap_or_revert_with(Error::CouldntUnwrapBalancesDictionaryKeyIntoURef);
 
-    // The key should now be able to be retrieved.  Note that if `get_key()` returns `None`, then
-    // `unwrap_or_revert()` will exit the process, returning `ApiError::None`.
-    // let retrieved_key = runtime::get_key(KEY_NAME).unwrap_or_revert();
-    // if retrieved_key != key {
-    //     runtime::revert(Error::KeyMismatch);
-    // }
+    match storage::dictionary_get::<U512>(balances, &caller.to_string()) {
+        Ok(Some(balance)) => {
+            if balance < amount {
+                runtime::revert(Error::InsufficientFunds);
+            } else {
+                storage::dictionary_put(balances, &caller.to_string(), balance - amount);
+                system::transfer_from_purse_to_account(contract_purse, caller, amount, None).unwrap_or_revert_with(Error::WithdrawalFailed);
+            }
+        },
+        Ok(None) => {
+            runtime::revert(Error::InsufficientFunds);
+        },
+        Err(error) => {
+            runtime::revert(ApiError::from(error));
+        }
+    }
+}
 
-    // Initialize the count to 0, locally.
-    let count_start = storage::new_uref(0_i32);
-    let mut counter_named_keys = NamedKeys::new();
-    let key_name = String::from(COUNT_KEY);
-    counter_named_keys.insert(key_name, count_start.into());
+#[no_mangle]
+pub extern "C" fn call() {
+    let mut entry_points = EntryPoints::new();
 
-    let mut counter_entry_points = EntryPoints::new();
-    counter_entry_points.add_entry_point(EntryPoint::new(
-        ENTRY_POINT_COUNTER_INC,
-        Vec::new(),
+    entry_points.add_entry_point(EntryPoint::new(
+        "deposit",
+        vec![
+            Parameter::new("purse", CLType::URef),
+        ],
         CLType::Unit,
         EntryPointAccess::Public,
         EntryPointType::Contract,
     ));
 
+    entry_points.add_entry_point(EntryPoint::new(
+        "withdraw",
+        vec![
+            Parameter::new("amount", CLType::U512),
+        ],
+        CLType::Unit,
+        EntryPointAccess::Public,
+        EntryPointType::Contract,
+    ));
 
-    let (stored_contract_hash, contract_version) = storage::new_contract(
-        counter_entry_points,
-        Some(counter_named_keys),
-        Some(CONTRACT_PACKAGE_NAME.to_string()),
-        Some(CONTRACT_ACCESS_UREF.to_string()),
+    let mut named_keys = NamedKeys::new();
+
+    let purse = system::create_purse();
+    named_keys.insert(String::from("purse"), purse.into());
+
+    let balances = storage::new_dictionary("balances").unwrap_or_revert_with(Error::CouldntCreateBalancesDictionary);
+    named_keys.insert(String::from("balances"), balances.into());
+
+    let (stored_contract_hash, _contract_version) = storage::new_contract(
+        entry_points,
+        Some(named_keys),
+        Some("bank_contract_package".to_string()),
+        Some("bank_contract_access_uref".to_string()),
     );
 
-
-    let version_uref = storage::new_uref(contract_version);
-    runtime::put_key(CONTRACT_VERSION_KEY, version_uref.into());
-    runtime::put_key(CONTRACT_KEY, stored_contract_hash.into());
-
-    
-}
-
-#[no_mangle]
-pub extern "C" fn counter_inc() {
-    let uref: URef = runtime::get_key(COUNT_KEY)
-        .unwrap_or_revert_with(ApiError::MissingKey)
-        .into_uref()
-        .unwrap_or_revert_with(ApiError::UnexpectedKeyVariant);
-    storage::add(uref, 1); // Increment the count by 1.
+    runtime::put_key("bank_contract", stored_contract_hash.into());
 }
