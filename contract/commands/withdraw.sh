@@ -6,6 +6,6 @@ casper-client put-deploy \
   --payment-amount 100000000000 \
   --session-entry-point "withdraw" \
   --session-arg "contract_hash:key='hash-4a31d64f1c5c09ce791083db791303f1f2cf83c208efc0a37ee1a3bf7422d9a7'" \
-  --session-arg "amount:u256='100'" \
+  --session-arg "amount:u256='1'" \
   --session-arg "address:key=hash-a3caf9628418b3a35bd4a92d62d35e8a244898cdea26c269bf75a2d82ad221f0'" \
 
