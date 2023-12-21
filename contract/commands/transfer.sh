@@ -18,8 +18,8 @@ casper-client put-deploy \
     --secret-key /Users/constantine/Projects/Casper/acc/keys/secret_key.pem \
     --session-hash hash-4a31d64f1c5c09ce791083db791303f1f2cf83c208efc0a37ee1a3bf7422d9a7 \
     --session-entry-point "transfer" \
-    --session-arg "recipient:key='hash-4853156363e9e627f10ce74f81255b4f655378cb3dc584b0da63887511c4a982'" \
-    --session-arg "amount:u256='1000'" \
+    --session-arg "recipient:key='hash-051afb4ddc4783e2e52e208c05831f976b08a3fd98ad9e50e3b5e02bc08dc041'" \
+    --session-arg "amount:u256='100000'" \
     --payment-amount "10000000000"
 
 
